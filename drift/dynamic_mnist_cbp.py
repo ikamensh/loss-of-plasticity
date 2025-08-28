@@ -203,7 +203,7 @@ def main():
     start = time.time()
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cbp", action="store_true", default=True, help="Enable CBP layers")
+    parser.add_argument("--cbp", action="store_false", default=True, help="Disable CBP layers")
     parser.add_argument(
         "--epochs", type=int, default=100, help="Number of training epochs"
     )
@@ -218,7 +218,7 @@ def main():
         action="store_true",
         help="Run cProfile on the training loop and print top stats",
     )
-    parser.add_argument("--dynamic", action="store_true", default=True, help="Enable distribution shift")
+    parser.add_argument("--static", action="store_true", default=False, help="Disable distribution shift")
 
     args = parser.parse_args()
     print(f"{args=}")
@@ -236,10 +236,10 @@ def main():
         else train_set.targets
     )
     class_indices = [torch.where(targets == i)[0] for i in range(NUM_CLASSES)]
-    if args.dynamic:
-        sampler = DriftingClassSampler(num_classes=NUM_CLASSES)
-    else:
+    if args.static:
         sampler = DriftingClassSampler(num_classes=NUM_CLASSES, min_weight=1., max_weight=1.)
+    else:
+        sampler = DriftingClassSampler(num_classes=NUM_CLASSES)
 
     steps_per_epoch = len(train_set) // BATCH_SIZE  # roughly one pass worth of samples
     prev_conv_resets, prev_fc_resets = 0, 0
