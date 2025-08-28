@@ -6,7 +6,7 @@ import torch
 # Allow tests to import the package without installation.
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-from lop.utils.drifting_sampler import DriftingClassSampler
+from scripts.drifting_sampler import DriftingClassSampler
 
 
 def test_sampling_respects_fixed_weights():

@@ -24,10 +24,12 @@ from torchvision import datasets, transforms
 
 # Allow running the script directly without installing the package.
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+sys.path.append(os.path.dirname(__file__))
+
 
 from lop.algos.cbp_conv import CBPConv
 from lop.algos.cbp_linear import CBPLinear
-from lop.utils.drifting_sampler import DriftingClassSampler
+from drift.drifting_sampler import DriftingClassSampler
 
 
 class SimpleNet(nn.Module):
