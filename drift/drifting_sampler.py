@@ -64,6 +64,13 @@ class DriftingClassSampler:
     ) -> List[int]:
         """Return ``batch_size`` dataset indices drawn with drifting class weights.
 
+        The original implementation drifted ``self.weights`` and sampled a
+        class for every element of the batch, incurring a ``torch.multinomial``
+        call inside a Python loop. Profiling the MNIST script showed this
+        dominated runtime once data loading was vectorised. We now drift once
+        per batch and draw all classes in a single multinomial call, which is
+        much faster while still allowing the class distribution to evolve.
+
         Parameters
         ----------
         class_indices:
@@ -72,11 +79,11 @@ class DriftingClassSampler:
         batch_size:
             Number of samples to draw.
         """
+        self.drift()
+        probs = self.weights / self.weights.sum()
+        classes = torch.multinomial(probs, batch_size, replacement=True)
         batch = []
-        for _ in range(batch_size):
-            # Each draw mutates ``self.weights`` so we must sample sequentially
-            # rather than vectorising the operation.
-            c = self.sample_class()
+        for c in classes.tolist():
             idx_tensor = class_indices[c]
             choice = torch.randint(len(idx_tensor), (1,))
             batch.append(int(idx_tensor[choice]))
