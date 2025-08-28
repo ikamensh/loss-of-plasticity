@@ -15,6 +15,7 @@ supported via ``--dataset``.
 """
 
 import argparse
+import json
 import os
 import sys
 from dataclasses import dataclass
@@ -34,6 +35,7 @@ sys.path.append(os.path.dirname(__file__))
 from drift.drifting_sampler import DriftingClassSampler
 from drift import models
 import time
+from datetime import datetime
 from matplotlib import pyplot as plt
 
 # ---------------------------------------------------------------------------
@@ -44,6 +46,7 @@ DATA_ROOT = "data"
 BATCH_SIZE = 64
 LEARNING_RATE = 0.1
 NUM_CLASSES = 10
+RUNS_DIR = "runs"
 
 
 @dataclass(frozen=True)
@@ -173,6 +176,14 @@ def main():
     args = parser.parse_args()
     print(f"{args=}")
 
+    # ------------------------------------------------------------------
+    # Log run configuration
+    # ------------------------------------------------------------------
+    run_dir = os.path.join(RUNS_DIR, datetime.now().strftime("%Y%m%d-%H%M%S"))
+    os.makedirs(run_dir, exist_ok=True)
+    with open(os.path.join(run_dir, "args.json"), "w") as fh:
+        json.dump(vars(args), fh, indent=2)
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_set, test_loader, cfg = get_data(args.dataset, BATCH_SIZE)
     model = build_model(args.model, cfg, use_cbp=args.cbp).to(device)
@@ -254,8 +265,8 @@ def main():
     print(f"Total time: {end-start:.2f}s")
 
     plt.plot(history)
+    plt.savefig(os.path.join(run_dir, "accuracy.png"))
     plt.show()
-    plt.savefig("accuracy.png")
 
 
 if __name__ == "__main__":
