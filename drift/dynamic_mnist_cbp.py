@@ -176,6 +176,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_set, test_loader, cfg = get_data(args.dataset, BATCH_SIZE)
     model = build_model(args.model, cfg, use_cbp=args.cbp).to(device)
+    print(model)
     opt = optim.SGD(model.parameters(), lr=LEARNING_RATE)
     criterion = nn.CrossEntropyLoss()
 
