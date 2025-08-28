@@ -88,6 +88,21 @@ def get_data(batch_size: int = 64):
     return train, test_loader
 
 
+def fetch_batch(train: datasets.MNIST, idxs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return binarised images and labels for ``idxs`` in one shot.
+
+    The original training loop iterated over indices and called
+    ``MNIST.__getitem__`` for each element. That repeated Python and transform
+    overhead dominated runtime according to profiling. Gathering the raw pixel
+    data and targets in bulk lets PyTorch handle the heavy lifting in C and
+    eliminates the per-item overhead.
+    """
+    x = train.data[idxs].float().div(255.0).unsqueeze(1)
+    x = torch.bernoulli(x)
+    y = train.targets[idxs].clone()
+    return x, y
+
+
 def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> float:
     """Compute classification accuracy on binarized MNIST images."""
     model.eval()
@@ -108,6 +123,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--cbp", action="store_true", help="Enable CBP layers")
     parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
+    parser.add_argument(
+        "--profile",
+        action="store_true",
+        help="Run cProfile on the training loop and print top stats",
+    )
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -123,19 +143,21 @@ def main():
     steps_per_epoch = len(train_set) // batch_size  # roughly one pass worth of samples
     prev_conv_resets, prev_fc_resets = 0, 0
 
+    if args.profile:
+        import cProfile
+
+        profiler = cProfile.Profile()
+        profiler.enable()
+
     for epoch in range(1, args.epochs + 1):
         # Track how many samples of each class were seen this epoch.
         epoch_counts = torch.zeros(10, dtype=torch.int64)
         for _ in range(steps_per_epoch):
-            batch_indices = sampler.sample_indices(class_indices, batch_size)
-            batch_x, batch_y = [], []
-            for idx in batch_indices:
-                x, y = train_set[idx]
-                batch_x.append(torch.bernoulli(x))
-                batch_y.append(y)
-
-            x = torch.stack(batch_x).to(device)
-            y = torch.tensor(batch_y)
+            batch_indices = torch.tensor(
+                sampler.sample_indices(class_indices, batch_size)
+            )
+            x, y = fetch_batch(train_set, batch_indices)
+            x = x.to(device)
             epoch_counts += torch.bincount(y, minlength=10)
             y = y.to(device)
             opt.zero_grad()
@@ -159,6 +181,13 @@ def main():
             f"{conv_total - prev_conv_resets}, dense: {fc_total - prev_fc_resets}"
         )
         prev_conv_resets, prev_fc_resets = conv_total, fc_total
+
+    if args.profile:
+        import pstats
+
+        profiler.disable()
+        stats = pstats.Stats(profiler).sort_stats("cumtime")
+        stats.print_stats(10)
 
 
 if __name__ == "__main__":
