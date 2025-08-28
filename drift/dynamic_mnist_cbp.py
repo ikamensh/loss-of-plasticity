@@ -63,6 +63,7 @@ class DatasetConfig:
     dataset_cls: Type[datasets.VisionDataset]
     in_channels: int
     image_size: int
+    binarize: bool
 
 
 DATASETS = {
@@ -202,8 +203,10 @@ def main():
         action="store_true",
         help="Run cProfile on the training loop and print top stats",
     )
+    parser.add_argument("--dynamic", action="store_true", default=True, help="Enable distribution shift")
+
     args = parser.parse_args()
-    print(f"{args.cbp=}")
+    print(f"{args=}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_set, test_loader, cfg = get_data(args.dataset, BATCH_SIZE)
@@ -218,7 +221,10 @@ def main():
         else train_set.targets
     )
     class_indices = [torch.where(targets == i)[0] for i in range(NUM_CLASSES)]
-    sampler = DriftingClassSampler(num_classes=NUM_CLASSES)
+    if args.dynamic:
+        sampler = DriftingClassSampler(num_classes=NUM_CLASSES)
+    else:
+        sampler = DriftingClassSampler(num_classes=NUM_CLASSES, min_weight=1., max_weight=1.)
 
     steps_per_epoch = len(train_set) // BATCH_SIZE  # roughly one pass worth of samples
     prev_conv_resets, prev_fc_resets = 0, 0
@@ -248,7 +254,7 @@ def main():
             loss.backward()
             opt.step()
 
-        acc = evaluate(model, test_loader, device)
+        acc = evaluate(model, test_loader, device, cfg.binarize)
         history.append(acc)
         print(f"Epoch {epoch}: test accuracy {acc:.3f}")
         # Report current sampler weights and how many samples were drawn per class.

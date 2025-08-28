@@ -39,7 +39,7 @@ class DriftingClassSampler:
     def __init__(
         self,
         num_classes: int,
-        step: float = 0.001,
+        step: float = 0.002,
         min_weight: float = 0.01,
         max_weight: float = 1.0,
     ) -> None:
@@ -47,6 +47,7 @@ class DriftingClassSampler:
         self.min_weight = min_weight
         self.max_weight = max_weight
         self.weights = min_weight + torch.rand(num_classes) * (max_weight - min_weight)
+
 
     def drift(self) -> None:
         """Perform a small random walk and clamp the weights."""
