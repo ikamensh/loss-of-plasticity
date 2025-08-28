@@ -1,8 +1,8 @@
 """Tests guarding against accidental network bloat.
 
-The CIFAR-ready ``SimpleNet`` was deepened to improve accuracy while remaining
-small enough for quick CPU experimentation. This test ensures the architecture
-stays lightweight so training scripts do not become unexpectedly slow."""
+The CIFAR-ready deep network balances accuracy with speed by keeping its
+parameter count low. This regression test ensures the architecture stays
+lightweight so CPU-only experiments do not become unexpectedly slow."""
 
 import os
 import sys
@@ -10,13 +10,14 @@ import sys
 # Allow importing the script without installing the package.
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-from drift.dynamic_mnist_cbp import DATASETS, SimpleNet
+from drift.dynamic_mnist_cbp import DATASETS
+from drift.models import DeepNet
 
 
-def test_simple_net_param_count_under_limit():
-    """``SimpleNet`` should stay below 100k parameters for fast CPU training."""
+def test_deep_net_param_count_under_limit():
+    """``DeepNet`` should stay below 100k parameters for fast CPU training."""
     config = DATASETS["cifar10"]
-    model = SimpleNet(config=config, use_cbp=False)
+    model = DeepNet(config=config, use_cbp=False)
     num_params = sum(p.numel() for p in model.parameters())
     assert num_params < 100_000
 

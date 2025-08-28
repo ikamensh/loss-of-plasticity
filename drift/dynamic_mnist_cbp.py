@@ -31,9 +31,8 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 sys.path.append(os.path.dirname(__file__))
 
 
-from lop.algos.cbp_conv import CBPConv
-from lop.algos.cbp_linear import CBPLinear
 from drift.drifting_sampler import DriftingClassSampler
+from drift import models
 import time
 from matplotlib import pyplot as plt
 
@@ -45,23 +44,6 @@ DATA_ROOT = "data"
 BATCH_SIZE = 64
 LEARNING_RATE = 0.1
 NUM_CLASSES = 10
-
-# --- Model dimensions ------------------------------------------------------
-# The original script used a single ``16@5×5`` convolution followed by a
-# ``32``-unit hidden layer.  CIFAR-10 proved too challenging for that tiny
-# model, so we deepen the network slightly while keeping the parameter count
-# comfortably below ``100k`` for fast CPU-only execution.
-CONV1_OUT_CHANNELS = 16
-CONV1_KERNEL_SIZE = 5
-CONV2_OUT_CHANNELS = 32
-CONV2_KERNEL_SIZE = 3
-POOL_KERNEL_SIZE = 2
-POOL_STRIDE = 2
-HIDDEN_DIM1 = 64
-HIDDEN_DIM2 = 32
-
-CBP_REPLACEMENT_RATE = 1e-4
-CBP_MATURITY_THRESHOLD = 100
 
 
 @dataclass(frozen=True)
@@ -78,76 +60,22 @@ DATASETS = {
     "cifar10": DatasetConfig(datasets.CIFAR10, 3, 32),
 }
 
+# Backwards compatibility: older scripts/tests imported ``SimpleNet`` directly
+# from this module.  Keep the name pointing to the deeper architecture.
+SimpleNet = models.DeepNet
 
-class SimpleNet(nn.Module):
-    """A small yet deeper network suitable for MNIST and CIFAR-10.
 
-    ``SimpleNet`` now consists of two convolutional blocks followed by two
-    hidden layers.  When ``use_cbp`` is True, CBPConv/CBPLinear wrappers are
-    inserted after the second convolution and penultimate linear layer to allow
-    feature replacement over time.  Shapes are inferred from the provided
-    :class:`DatasetConfig` to avoid hard-coded image dimensions.
+def build_model(name: str, config: DatasetConfig, use_cbp: bool) -> nn.Module:
+    """Return the requested model architecture.
+
+    The training script originally hard-coded a single network which made it
+    impossible to revisit earlier, smaller architectures.  ``build_model``
+    exposes a simple factory so callers (and the ``--model`` CLI flag) can
+    choose between :class:`~drift.models.ShallowNet` and
+    :class:`~drift.models.DeepNet`.
     """
 
-    def __init__(self, config: DatasetConfig, use_cbp: bool):
-        super().__init__()
-        self.act = nn.ReLU()
-
-        # Convolutional feature extractor.
-        self.conv1 = nn.Conv2d(
-            config.in_channels, CONV1_OUT_CHANNELS, kernel_size=CONV1_KERNEL_SIZE
-        )
-        self.conv2 = nn.Conv2d(
-            CONV1_OUT_CHANNELS, CONV2_OUT_CHANNELS, kernel_size=CONV2_KERNEL_SIZE
-        )
-        self.pool = nn.MaxPool2d(POOL_KERNEL_SIZE, POOL_STRIDE)
-
-        # Infer the flattened feature dimension and the number of outputs per
-        # convolutional filter for CBP from a dummy forward pass.  This keeps
-        # the model agnostic to input resolution.
-        with torch.no_grad():
-            dummy = torch.zeros(
-                1, config.in_channels, config.image_size, config.image_size
-            )
-            h = self.pool(self.act(self.conv1(dummy)))
-            h = self.pool(self.act(self.conv2(h)))
-            flattened_dim = int(h.view(1, -1).size(1))
-            last_filter_outputs = int(h[0, 0].numel())
-
-        self.fc1 = nn.Linear(flattened_dim, HIDDEN_DIM1)
-        self.fc2 = nn.Linear(HIDDEN_DIM1, HIDDEN_DIM2)
-        self.fc3 = nn.Linear(HIDDEN_DIM2, NUM_CLASSES)
-
-        if use_cbp:
-            self.cbp_conv = CBPConv(
-                in_layer=self.conv2,
-                out_layer=self.fc1,
-                num_last_filter_outputs=last_filter_outputs,
-                replacement_rate=CBP_REPLACEMENT_RATE,
-                maturity_threshold=CBP_MATURITY_THRESHOLD,
-            )
-            self.cbp_fc = CBPLinear(
-                in_layer=self.fc2,
-                out_layer=self.fc3,
-                replacement_rate=CBP_REPLACEMENT_RATE,
-                maturity_threshold=CBP_MATURITY_THRESHOLD,
-            )
-        else:
-            self.cbp_conv = None
-            self.cbp_fc = None
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.pool(self.act(self.conv1(x)))
-        x = self.pool(self.act(self.conv2(x)))
-        if self.cbp_conv is not None:
-            x = self.cbp_conv(x)
-        x = x.view(x.size(0), -1)
-        x = self.act(self.fc1(x))
-        x = self.act(self.fc2(x))
-        if self.cbp_fc is not None:
-            x = self.cbp_fc(x)
-        x = self.fc3(x)
-        return x
+    return models.MODELS[name](config=config, use_cbp=use_cbp)
 
 
 def get_data(dataset: str, batch_size: int = BATCH_SIZE):
@@ -235,13 +163,19 @@ def main():
         help="Run cProfile on the training loop and print top stats",
     )
     parser.add_argument("--static", action="store_true", default=False, help="Disable distribution shift")
+    parser.add_argument(
+        "--model",
+        choices=models.MODELS.keys(),
+        default="deep",
+        help="Model architecture to use",
+    )
 
     args = parser.parse_args()
     print(f"{args=}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_set, test_loader, cfg = get_data(args.dataset, BATCH_SIZE)
-    model = SimpleNet(config=cfg, use_cbp=args.cbp).to(device)
+    model = build_model(args.model, cfg, use_cbp=args.cbp).to(device)
     opt = optim.SGD(model.parameters(), lr=LEARNING_RATE)
     criterion = nn.CrossEntropyLoss()
 
