@@ -1,21 +1,25 @@
-"""Train a tiny ConvNet on a class-skewed MNIST stream with optional CBP layers.
+"""Train a tiny ConvNet on a class-skewed image stream with optional CBP layers.
 
 Instead of permuting pixels, this variant drifts the *class distribution* over
-time. Each digit maintains a sampling weight that performs a small random walk
+time. Each class maintains a sampling weight that performs a small random walk
 between 0.01 and 1.0. For every training example we first perturb all weights,
 then draw a class in proportion to those weights and sample an image of that
 class. The result is a continually changing, nonstationary stream where some
-digits become temporarily rare while others dominate.
+classes become temporarily rare while others dominate.
 
 Vanilla networks tend to over-specialize toward classes that appear early in
 training. When Continuous Backprop (``--cbp``) is enabled, filters can be
 replaced over time, helping the model adapt as the class proportions drift and
-yielding more stable accuracy under this shift.
+yielding more stable accuracy under this shift.  Both MNIST and CIFAR-10 are
+supported via ``--dataset``.
 """
 
 import argparse
 import os
 import sys
+from dataclasses import dataclass
+from typing import Type
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -32,36 +36,87 @@ from lop.algos.cbp_linear import CBPLinear
 from drift.drifting_sampler import DriftingClassSampler
 import time
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+DATA_ROOT = "data"
+BATCH_SIZE = 64
+LEARNING_RATE = 0.1
+NUM_CLASSES = 10
+
+CONV_OUT_CHANNELS = 16
+CONV_KERNEL_SIZE = 5
+POOL_KERNEL_SIZE = 2
+POOL_STRIDE = 2
+HIDDEN_DIM = 32
+
+CBP_REPLACEMENT_RATE = 1e-4
+CBP_MATURITY_THRESHOLD = 100
+
+
+@dataclass(frozen=True)
+class DatasetConfig:
+    """Configuration parameters for each supported dataset."""
+
+    dataset_cls: Type[datasets.VisionDataset]
+    in_channels: int
+    image_size: int
+    binarize: bool  # Whether to binarize inputs during training/eval
+
+
+DATASETS = {
+    "mnist": DatasetConfig(datasets.MNIST, 1, 28, True),
+    "cifar10": DatasetConfig(datasets.CIFAR10, 3, 32, False),
+}
+
+
 class SimpleNet(nn.Module):
     """Minimal network with one convolutional and one linear layer.
 
     When ``use_cbp`` is True, CBPConv/CBPLinear wrappers are inserted to enable
-    continual feature replacement; otherwise the plain layers are used.
+    continual feature replacement; otherwise the plain layers are used.  Layer
+    shapes are inferred from the provided :class:`DatasetConfig` to avoid magic
+    numbers.
     """
 
-    def __init__(self, use_cbp: bool):
+    def __init__(self, config: DatasetConfig, use_cbp: bool):
         super().__init__()
-        # Convolutional feature extractor
-        self.conv = nn.Conv2d(1, 16, kernel_size=5)
-        self.pool = nn.MaxPool2d(2, 2)
-        # After conv (28->24) and pooling (24->12)
-        self.fc1 = nn.Linear(16 * 12 * 12, 32)
-        self.fc2 = nn.Linear(32, 10)
         self.act = nn.ReLU()
+
+        # Convolutional feature extractor.
+        self.conv = nn.Conv2d(
+            config.in_channels, CONV_OUT_CHANNELS, kernel_size=CONV_KERNEL_SIZE
+        )
+        self.pool = nn.MaxPool2d(POOL_KERNEL_SIZE, POOL_STRIDE)
+
+        # Infer the flattened feature dimension and the number of outputs per
+        # convolutional filter for CBP from a dummy forward pass.  This keeps
+        # the model agnostic to input resolution.
+        with torch.no_grad():
+            dummy = torch.zeros(
+                1, config.in_channels, config.image_size, config.image_size
+            )
+            pooled = self.pool(self.act(self.conv(dummy)))
+            flattened_dim = int(pooled.view(1, -1).size(1))
+            last_filter_outputs = int(pooled[0, 0].numel())
+
+        self.fc1 = nn.Linear(flattened_dim, HIDDEN_DIM)
+        self.fc2 = nn.Linear(HIDDEN_DIM, NUM_CLASSES)
 
         if use_cbp:
             self.cbp_conv = CBPConv(
                 in_layer=self.conv,
                 out_layer=self.fc1,
-                num_last_filter_outputs=12 * 12,
-                replacement_rate=1e-4,
-                maturity_threshold=100,
+                num_last_filter_outputs=last_filter_outputs,
+                replacement_rate=CBP_REPLACEMENT_RATE,
+                maturity_threshold=CBP_MATURITY_THRESHOLD,
             )
             self.cbp_fc = CBPLinear(
                 in_layer=self.fc1,
                 out_layer=self.fc2,
-                replacement_rate=1e-4,
-                maturity_threshold=100,
+                replacement_rate=CBP_REPLACEMENT_RATE,
+                maturity_threshold=CBP_MATURITY_THRESHOLD,
             )
         else:
             self.cbp_conv = None
@@ -79,13 +134,19 @@ class SimpleNet(nn.Module):
         return x
 
 
-def get_data(batch_size: int = 64):
-    """Return the MNIST train dataset and a test loader."""
+def get_data(dataset: str, batch_size: int = BATCH_SIZE):
+    """Return the train dataset, test loader and configuration for ``dataset``."""
+
+    config = DATASETS[dataset]
     transform = transforms.ToTensor()
-    train = datasets.MNIST(root="data", train=True, download=True, transform=transform)
-    test = datasets.MNIST(root="data", train=False, download=True, transform=transform)
+    train = config.dataset_cls(
+        root=DATA_ROOT, train=True, download=True, transform=transform
+    )
+    test = config.dataset_cls(
+        root=DATA_ROOT, train=False, download=True, transform=transform
+    )
     test_loader = DataLoader(test, batch_size=batch_size)
-    return train, test_loader
+    return train, test_loader, config
 
 
 def fetch_batch(train: datasets.MNIST, idxs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -103,14 +164,17 @@ def fetch_batch(train: datasets.MNIST, idxs: torch.Tensor) -> tuple[torch.Tensor
     return x, y
 
 
-def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> float:
-    """Compute classification accuracy on binarized MNIST images."""
+def evaluate(
+    model: nn.Module, loader: DataLoader, device: torch.device, binarize: bool
+) -> float:
+    """Compute classification accuracy on the given dataset."""
     model.eval()
     correct = 0
     total = 0
     with torch.no_grad():
         for x, y in loader:
-            x = torch.bernoulli(x)  # binarize at evaluation time
+            if binarize:
+                x = torch.bernoulli(x)
             x, y = x.to(device), y.to(device)
             preds = model(x)
             correct += (preds.argmax(dim=1) == y).sum().item()
@@ -124,7 +188,15 @@ def main():
 
     parser = argparse.ArgumentParser()
     parser.add_argument("--cbp", action="store_true", default=True, help="Enable CBP layers")
-    parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
+    parser.add_argument(
+        "--epochs", type=int, default=100, help="Number of training epochs"
+    )
+    parser.add_argument(
+        "--dataset",
+        choices=DATASETS.keys(),
+        default="mnist",
+        help="Dataset to use",
+    )
     parser.add_argument(
         "--profile",
         action="store_true",
@@ -134,16 +206,21 @@ def main():
     print(f"{args.cbp=}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    batch_size = 64
-    train_set, test_loader = get_data(batch_size)
-    model = SimpleNet(use_cbp=args.cbp).to(device)
-    opt = optim.Adam(model.parameters(), lr=0.03)
+    train_set, test_loader, cfg = get_data(args.dataset, BATCH_SIZE)
+    model = SimpleNet(config=cfg, use_cbp=args.cbp).to(device)
+    opt = optim.SGD(model.parameters(), lr=LEARNING_RATE)
     criterion = nn.CrossEntropyLoss()
-    # Pre-compute indices for each class to allow sampling with replacement.
-    class_indices = [torch.where(train_set.targets == i)[0] for i in range(10)]
-    sampler = DriftingClassSampler(num_classes=10)
 
-    steps_per_epoch = len(train_set) // batch_size  # roughly one pass worth of samples
+    # Pre-compute indices for each class to allow sampling with replacement.
+    targets = (
+        torch.tensor(train_set.targets)
+        if isinstance(train_set.targets, list)
+        else train_set.targets
+    )
+    class_indices = [torch.where(targets == i)[0] for i in range(NUM_CLASSES)]
+    sampler = DriftingClassSampler(num_classes=NUM_CLASSES)
+
+    steps_per_epoch = len(train_set) // BATCH_SIZE  # roughly one pass worth of samples
     prev_conv_resets, prev_fc_resets = 0, 0
 
     if args.profile:
@@ -156,7 +233,7 @@ def main():
         epoch_start = time.time()
 
         # Track how many samples of each class were seen this epoch.
-        epoch_counts = torch.zeros(10, dtype=torch.int64)
+        epoch_counts = torch.zeros(NUM_CLASSES, dtype=torch.int64)
         for _ in range(steps_per_epoch):
             batch_indices = torch.tensor(
                 sampler.sample_indices(class_indices, batch_size)
@@ -170,7 +247,7 @@ def main():
             loss.backward()
             opt.step()
 
-        acc = evaluate(model, test_loader, device)
+        acc = evaluate(model, test_loader, device, cfg.binarize)
         print(f"Epoch {epoch}: test accuracy {acc:.3f}")
         # Report current sampler weights and how many samples were drawn per class.
         print(f"  class weights: {[f"{x:.2}" for x in sampler.weights.tolist()]}")
