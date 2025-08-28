@@ -63,12 +63,11 @@ class DatasetConfig:
     dataset_cls: Type[datasets.VisionDataset]
     in_channels: int
     image_size: int
-    binarize: bool
 
 
 DATASETS = {
-    "mnist": DatasetConfig(datasets.MNIST, 1, 28, True),
-    "cifar10": DatasetConfig(datasets.CIFAR10, 3, 32, False),
+    "mnist": DatasetConfig(datasets.MNIST, 1, 28),
+    "cifar10": DatasetConfig(datasets.CIFAR10, 3, 32),
 }
 
 
@@ -151,31 +150,47 @@ def get_data(dataset: str, batch_size: int = BATCH_SIZE):
 
 
 def fetch_batch(train: datasets.MNIST, idxs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """Return binarised images and labels for ``idxs`` in one shot.
+    """Return normalised images and labels for ``idxs`` in one shot.
 
-    The original training loop iterated over indices and called
-    ``MNIST.__getitem__`` for each element. That repeated Python and transform
-    overhead dominated runtime according to profiling. Gathering the raw pixel
-    data and targets in bulk lets PyTorch handle the heavy lifting in C and
-    eliminates the per-item overhead.
+    ``fetch_batch`` replaces the original per-item loop over indices, removing
+    Python and ``ToTensor`` overhead by pulling data directly from the dataset's
+    storage.  The helper understands both MNIST's ``N×H×W`` tensor layout and
+    CIFAR's ``N×H×W×C`` NumPy arrays, returning tensors scaled to ``[0, 1]`` and
+    permuted into channels-first format when necessary.
     """
-    x = train.data[idxs].float().div(255.0).unsqueeze(1)
-    x = torch.bernoulli(x)
-    y = train.targets[idxs].clone()
+
+    # ``MNIST`` stores data as a ``torch.Tensor`` whereas ``CIFAR10`` uses a
+    # ``numpy.ndarray``.  Index accordingly and scale pixel values to ``[0, 1]``.
+    if isinstance(train.data, torch.Tensor):
+        raw = train.data[idxs].float().div(255.0)
+    else:
+        raw = torch.tensor(train.data[idxs.tolist()], dtype=torch.float32).div(255.0)
+
+    if raw.ndim == 3:  # Grayscale images: N×H×W
+        # Add a channel dimension for consistency with convolutional layers.
+        x = raw.unsqueeze(1)
+    elif raw.ndim == 4:  # Colour images: N×H×W×C
+        # Rearrange to channels-first expected by PyTorch modules.
+        x = raw.permute(0, 3, 1, 2)
+    else:  # pragma: no cover - defensive branch
+        raise ValueError(f"Unsupported data shape {raw.shape}")
+
+    # Targets may be a tensor (MNIST) or a Python list (CIFAR).
+    if isinstance(train.targets, torch.Tensor):
+        y = train.targets[idxs].clone()
+    else:
+        y = torch.tensor(train.targets)[idxs].clone()
+
     return x, y
 
 
-def evaluate(
-    model: nn.Module, loader: DataLoader, device: torch.device, binarize: bool
-) -> float:
+def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> float:
     """Compute classification accuracy on the given dataset."""
     model.eval()
     correct = 0
     total = 0
     with torch.no_grad():
         for x, y in loader:
-            if binarize:
-                x = torch.bernoulli(x)
             x, y = x.to(device), y.to(device)
             preds = model(x)
             correct += (preds.argmax(dim=1) == y).sum().item()
@@ -243,6 +258,9 @@ def main():
         epoch_counts = torch.zeros(NUM_CLASSES, dtype=torch.int64)
         for _ in range(steps_per_epoch):
             batch_indices = torch.tensor(
+                # ``DriftingClassSampler`` expects a concrete batch size.  The
+                # script uses a fixed ``BATCH_SIZE`` constant, so pass it
+                # directly rather than an undefined variable.
                 sampler.sample_indices(class_indices, BATCH_SIZE)
             )
             x, y = fetch_batch(train_set, batch_indices)
@@ -254,7 +272,7 @@ def main():
             loss.backward()
             opt.step()
 
-        acc = evaluate(model, test_loader, device, cfg.binarize)
+        acc = evaluate(model, test_loader, device)
         history.append(acc)
         print(f"Epoch {epoch}: test accuracy {acc:.3f}")
         # Report current sampler weights and how many samples were drawn per class.
