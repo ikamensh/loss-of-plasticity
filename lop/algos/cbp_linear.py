@@ -60,6 +60,9 @@ class CBPLinear(nn.Module):
         self.util_type = util_type
         self.decay_rate = decay_rate
         self.features = None
+        # Count how many linear features (neurons) have been reset so training
+        # scripts can surface this statistic.
+        self.num_feature_resets = 0
         """
         Register hooks
         """
@@ -142,6 +145,10 @@ class CBPLinear(nn.Module):
             if self.ln_layer is not None:
                 self.ln_layer.bias.data[features_to_replace] = 0.0
                 self.ln_layer.weight.data[features_to_replace] = 1.0
+
+            # Update visibility counter so callers can inspect how often CBP
+            # replaced dense features.
+            self.num_feature_resets += int(num_features_to_replace)
 
     def reinit(self):
         """

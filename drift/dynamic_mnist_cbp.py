@@ -121,8 +121,11 @@ def main():
     sampler = DriftingClassSampler(num_classes=10)
 
     steps_per_epoch = len(train_set) // batch_size  # roughly one pass worth of samples
+    prev_conv_resets, prev_fc_resets = 0, 0
 
     for epoch in range(1, args.epochs + 1):
+        # Track how many samples of each class were seen this epoch.
+        epoch_counts = torch.zeros(10, dtype=torch.int64)
         for _ in range(steps_per_epoch):
             batch_indices = sampler.sample_indices(class_indices, batch_size)
             batch_x, batch_y = [], []
@@ -132,7 +135,9 @@ def main():
                 batch_y.append(y)
 
             x = torch.stack(batch_x).to(device)
-            y = torch.tensor(batch_y, device=device)
+            y = torch.tensor(batch_y)
+            epoch_counts += torch.bincount(y, minlength=10)
+            y = y.to(device)
             opt.zero_grad()
             loss = criterion(model(x), y)
             loss.backward()
@@ -140,6 +145,20 @@ def main():
 
         acc = evaluate(model, test_loader, device)
         print(f"Epoch {epoch}: test accuracy {acc:.3f}")
+        # Report current sampler weights and how many samples were drawn per class.
+        print(f"  class weights: {sampler.weights.tolist()}")
+        total_samples = int(epoch_counts.sum())
+        rel_counts = (epoch_counts.float() / total_samples).tolist()
+        print(f"  samples per class: {epoch_counts.tolist()} (rel {rel_counts})")
+
+        # Report how many features were reset by CBP layers this epoch.
+        conv_total = model.cbp_conv.num_feature_resets if model.cbp_conv else 0
+        fc_total = model.cbp_fc.num_feature_resets if model.cbp_fc else 0
+        print(
+            "  feature resets this epoch - conv: "
+            f"{conv_total - prev_conv_resets}, dense: {fc_total - prev_fc_resets}"
+        )
+        prev_conv_resets, prev_fc_resets = conv_total, fc_total
 
 
 if __name__ == "__main__":
