@@ -1,12 +1,16 @@
-import os
-import sys
+"""Exercise the DriftingClassSampler's core behaviours.
+
+The sampler was originally housed under ``scripts.drifting_sampler``.  A
+recent refactor moved it into the ``drift`` package, but the tests still
+imported from the old location and fiddled with ``sys.path`` to make it
+work.  That hack now raises ``ModuleNotFoundError``.  Installing the
+package and importing from ``drift`` verifies the new structure and keeps
+the tests representative of real usage.
+"""
 
 import torch
 
-# Allow tests to import the package without installation.
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-
-from scripts.drifting_sampler import DriftingClassSampler
+from drift.drifting_sampler import DriftingClassSampler
 
 
 def test_sampling_respects_fixed_weights():

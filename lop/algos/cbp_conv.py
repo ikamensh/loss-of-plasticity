@@ -34,6 +34,10 @@ class CBPConv(nn.Module):
         self.decay_rate = decay_rate
         self.features = None
         self.num_last_filter_outputs = num_last_filter_outputs
+        # Track how many individual convolutional filters have been reset.  This
+        # allows training scripts to report CBP activity for better
+        # observability.
+        self.num_feature_resets = 0
 
         """
         Register hooks
@@ -128,6 +132,10 @@ class CBPConv(nn.Module):
             if self.ln_layer is not None:
                 self.ln_layer.bias.data[features_to_replace_input_indices] = 0.0
                 self.ln_layer.weight.data[features_to_replace_input_indices] = 1.0
+
+            # Keep count of how many filters were reinitialised for visibility
+            # in training logs.
+            self.num_feature_resets += int(num_features_to_replace)
 
     def reinit(self):
         """
