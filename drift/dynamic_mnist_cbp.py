@@ -30,7 +30,7 @@ sys.path.append(os.path.dirname(__file__))
 from lop.algos.cbp_conv import CBPConv
 from lop.algos.cbp_linear import CBPLinear
 from drift.drifting_sampler import DriftingClassSampler
-
+import time
 
 class SimpleNet(nn.Module):
     """Minimal network with one convolutional and one linear layer.
@@ -120,21 +120,24 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device) -> floa
 
 
 def main():
+    start = time.time()
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--cbp", action="store_true", help="Enable CBP layers")
-    parser.add_argument("--epochs", type=int, default=10, help="Number of training epochs")
+    parser.add_argument("--cbp", action="store_true", default=True, help="Enable CBP layers")
+    parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs")
     parser.add_argument(
         "--profile",
         action="store_true",
         help="Run cProfile on the training loop and print top stats",
     )
     args = parser.parse_args()
+    print(f"{args.cbp=}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     batch_size = 64
     train_set, test_loader = get_data(batch_size)
     model = SimpleNet(use_cbp=args.cbp).to(device)
-    opt = optim.SGD(model.parameters(), lr=0.1)
+    opt = optim.Adam(model.parameters(), lr=0.03)
     criterion = nn.CrossEntropyLoss()
     # Pre-compute indices for each class to allow sampling with replacement.
     class_indices = [torch.where(train_set.targets == i)[0] for i in range(10)]
@@ -150,6 +153,8 @@ def main():
         profiler.enable()
 
     for epoch in range(1, args.epochs + 1):
+        epoch_start = time.time()
+
         # Track how many samples of each class were seen this epoch.
         epoch_counts = torch.zeros(10, dtype=torch.int64)
         for _ in range(steps_per_epoch):
@@ -181,6 +186,8 @@ def main():
             f"{conv_total - prev_conv_resets}, dense: {fc_total - prev_fc_resets}"
         )
         prev_conv_resets, prev_fc_resets = conv_total, fc_total
+        epoch_end = time.time()
+        print(f"  Epoch time: {epoch_end-epoch_start:.2f}s")
 
     if args.profile:
         import pstats
@@ -188,6 +195,9 @@ def main():
         profiler.disable()
         stats = pstats.Stats(profiler).sort_stats("cumtime")
         stats.print_stats(10)
+
+    end = time.time()
+    print(f"Total time: {end-start:.2f}s")
 
 
 if __name__ == "__main__":
