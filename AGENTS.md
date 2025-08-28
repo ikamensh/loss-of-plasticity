@@ -1,5 +1,9 @@
 # Agent Instructions
 
+## Focus area
+I'm building the script `dynamic_mnist_cbp.py`, unless stated otherwise assume tasks
+are about this script and its dependencies.
+
 ## Environment Setup
 - Python 3.12 with CPU-only PyTorch 2.8.0 and torchvision 0.23.0 are installed via `pip install torch torchvision torchaudio --extra-index-url https://download.pytorch.org/whl/cpu`.
 - Additional dependencies: `tqdm`, `PyYAML`, `scipy`, `mlproj-manager`, `zipp`, `pycparser`, `gym`, and friends were installed with `pip`.
