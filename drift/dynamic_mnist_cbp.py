@@ -146,9 +146,9 @@ def main():
         acc = evaluate(model, test_loader, device)
         print(f"Epoch {epoch}: test accuracy {acc:.3f}")
         # Report current sampler weights and how many samples were drawn per class.
-        print(f"  class weights: {sampler.weights.tolist()}")
+        print(f"  class weights: {[f"{x:.2}" for x in sampler.weights.tolist()]}")
         total_samples = int(epoch_counts.sum())
-        rel_counts = (epoch_counts.float() / total_samples).tolist()
+        rel_counts = [f"{x:.2%}" for x in (epoch_counts.float() / total_samples).tolist()]
         print(f"  samples per class: {epoch_counts.tolist()} (rel {rel_counts})")
 
         # Report how many features were reset by CBP layers this epoch.
