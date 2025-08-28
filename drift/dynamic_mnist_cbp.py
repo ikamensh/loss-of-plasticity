@@ -276,6 +276,7 @@ def main():
     # Accuracy history
     plt.figure()
     plt.plot(history)
+    plt.grid()
     plt.xlabel("Epoch")
     plt.ylabel("Test accuracy")
     plt.savefig(os.path.join(run_dir, "accuracy.png"))
