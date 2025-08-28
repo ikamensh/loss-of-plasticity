@@ -213,6 +213,7 @@ def main():
         profiler.enable()
 
     history = []
+    count_history: list[torch.Tensor] = []
     for epoch in range(1, args.epochs + 1):
         epoch_start = time.time()
 
@@ -233,6 +234,10 @@ def main():
             loss = criterion(model(x), y)
             loss.backward()
             opt.step()
+
+        # Store how many samples of each class occurred this epoch so we can
+        # visualise the drift over time after training completes.
+        count_history.append(epoch_counts.clone())
 
         acc = evaluate(model, test_loader, device)
         history.append(acc)
@@ -264,8 +269,43 @@ def main():
     end = time.time()
     print(f"Total time: {end-start:.2f}s")
 
+    # ------------------------------------------------------------------
+    # Plot metrics collected during training
+    # ------------------------------------------------------------------
+
+    # Accuracy history
+    plt.figure()
     plt.plot(history)
+    plt.xlabel("Epoch")
+    plt.ylabel("Test accuracy")
     plt.savefig(os.path.join(run_dir, "accuracy.png"))
+
+    if count_history:
+        # Convert the per-epoch class counts into a tensor so we can derive
+        # relative and cumulative frequencies.  ``stack`` ensures shape E×C.
+        counts = torch.stack(count_history)
+        rel_freq = counts.float() / counts.sum(dim=1, keepdim=True)
+        cum_counts = torch.cumsum(counts, dim=0)
+        cum_freq = cum_counts.float() / cum_counts.sum(dim=1, keepdim=True)
+
+        # Plot relative frequency per class for each epoch.
+        plt.figure()
+        for cls in range(NUM_CLASSES):
+            plt.plot(rel_freq[:, cls].tolist(), label=str(cls))
+        plt.xlabel("Epoch")
+        plt.ylabel("Relative frequency")
+        plt.legend(title="class")
+        plt.savefig(os.path.join(run_dir, "class_freq_relative.png"))
+
+        # Plot cumulative frequency of each class over epochs.
+        plt.figure()
+        for cls in range(NUM_CLASSES):
+            plt.plot(cum_freq[:, cls].tolist(), label=str(cls))
+        plt.xlabel("Epoch")
+        plt.ylabel("Cumulative frequency")
+        plt.legend(title="class")
+        plt.savefig(os.path.join(run_dir, "class_freq_cumulative.png"))
+
     plt.show()
 
 
