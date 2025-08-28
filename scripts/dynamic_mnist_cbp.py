@@ -27,6 +27,7 @@ sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
 from lop.algos.cbp_conv import CBPConv
 from lop.algos.cbp_linear import CBPLinear
+from lop.utils.drifting_sampler import DriftingClassSampler
 
 
 class SimpleNet(nn.Module):
@@ -115,24 +116,16 @@ def main():
     criterion = nn.CrossEntropyLoss()
     # Pre-compute indices for each class to allow sampling with replacement.
     class_indices = [torch.where(train_set.targets == i)[0] for i in range(10)]
-    weights = torch.ones(10)
-
-    def drift_weights(w: torch.Tensor, step: float = 0.01) -> torch.Tensor:
-        """Perform a small random walk and clamp the weights to [0.01, 1]."""
-        w += torch.randn_like(w) * step
-        return w.clamp_(0.01, 1.0)
+    sampler = DriftingClassSampler(num_classes=10)
 
     steps_per_epoch = len(train_set) // batch_size  # roughly one pass worth of samples
 
     for epoch in range(1, args.epochs + 1):
         for _ in range(steps_per_epoch):
+            batch_indices = sampler.sample_indices(class_indices, batch_size)
             batch_x, batch_y = [], []
-            for _ in range(batch_size):
-                weights = drift_weights(weights)
-                probs = weights / weights.sum()
-                c = torch.multinomial(probs, 1).item()
-                idx = class_indices[c][torch.randint(len(class_indices[c]), (1,))]
-                x, y = train_set[idx.item()]
+            for idx in batch_indices:
+                x, y = train_set[idx]
                 batch_x.append(torch.bernoulli(x))
                 batch_y.append(y)
 
