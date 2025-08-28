@@ -35,6 +35,7 @@ from lop.algos.cbp_conv import CBPConv
 from lop.algos.cbp_linear import CBPLinear
 from drift.drifting_sampler import DriftingClassSampler
 import time
+from matplotlib import pyplot as plt
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -62,7 +63,6 @@ class DatasetConfig:
     dataset_cls: Type[datasets.VisionDataset]
     in_channels: int
     image_size: int
-    binarize: bool  # Whether to binarize inputs during training/eval
 
 
 DATASETS = {
@@ -229,6 +229,7 @@ def main():
         profiler = cProfile.Profile()
         profiler.enable()
 
+    history = []
     for epoch in range(1, args.epochs + 1):
         epoch_start = time.time()
 
@@ -236,7 +237,7 @@ def main():
         epoch_counts = torch.zeros(NUM_CLASSES, dtype=torch.int64)
         for _ in range(steps_per_epoch):
             batch_indices = torch.tensor(
-                sampler.sample_indices(class_indices, batch_size)
+                sampler.sample_indices(class_indices, BATCH_SIZE)
             )
             x, y = fetch_batch(train_set, batch_indices)
             x = x.to(device)
@@ -247,7 +248,8 @@ def main():
             loss.backward()
             opt.step()
 
-        acc = evaluate(model, test_loader, device, cfg.binarize)
+        acc = evaluate(model, test_loader, device)
+        history.append(acc)
         print(f"Epoch {epoch}: test accuracy {acc:.3f}")
         # Report current sampler weights and how many samples were drawn per class.
         print(f"  class weights: {[f"{x:.2}" for x in sampler.weights.tolist()]}")
@@ -275,6 +277,10 @@ def main():
 
     end = time.time()
     print(f"Total time: {end-start:.2f}s")
+
+    plt.plot(history)
+    plt.show()
+    plt.savefig("accuracy.png")
 
 
 if __name__ == "__main__":
